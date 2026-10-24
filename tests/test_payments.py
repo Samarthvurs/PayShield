@@ -4,6 +4,7 @@ import asyncio
 from decimal import Decimal
 
 import httpx
+import pytest
 from sqlalchemy import func, select
 
 from app import db
@@ -148,3 +149,18 @@ async def test_list_get_and_stats(client: httpx.AsyncClient) -> None:
 async def test_empty_stats(client: httpx.AsyncClient) -> None:
     stats = (await client.get("/api/stats")).json()
     assert stats["total_payments"] == 0 and stats["approval_rate"] == 0.0
+
+
+async def test_mongo_outage_does_not_fail_the_payment(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import payments
+
+    def broken_mongo():
+        raise RuntimeError("mongo is down")
+
+    monkeypatch.setattr(payments.db, "get_mongo", broken_mongo)
+    number, card_id = await make_card(balance="100.00")
+    r = await client.post(URL, json=payment_body(number, 10.0), headers=headers())
+    assert r.status_code == 200 and r.json()["response_code"] == "00"
+    assert await _balance(card_id) == Decimal("90.00")

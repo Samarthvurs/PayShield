@@ -22,3 +22,5 @@ filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.coverage.run]
 source = ["app"]
+# SQLAlchemy async runs our code inside greenlets; without this, coverage misses it.
+concurrency = ["thread", "greenlet"]

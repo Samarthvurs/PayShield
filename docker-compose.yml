@@ -40,7 +40,14 @@ services:
         condition: service_healthy
       mongo:
         condition: service_healthy
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # 4 worker processes: the fraud check is CPU work (pandas + model), so one process can
+    # only use one core. Each worker gets ONE math thread: by default scikit-learn/numpy
+    # start a thread per core in every worker, and they fight over the CPU.
+    # (Only for the server; `make train` still uses every core.)
+    # See docs/load_test_results.md for before/after.
+    command: >-
+      env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 
 volumes:
   pgdata:

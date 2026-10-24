@@ -32,7 +32,7 @@ _state = _State()
 async def connect(settings: Settings | None = None) -> None:
     """Open both database connections and make sure tables and indexes exist."""
     settings = settings or get_settings()
-    _state.engine = create_async_engine(settings.database_url, pool_size=20, max_overflow=10)
+    _state.engine = create_async_engine(settings.database_url, pool_size=10, max_overflow=5)
     _state.sessionmaker = async_sessionmaker(_state.engine, expire_on_commit=False)
     _state.mongo_client = AsyncIOMotorClient(settings.mongo_url, serverSelectionTimeoutMS=3000)
     _state.mongo_db = _state.mongo_client[settings.mongo_db]

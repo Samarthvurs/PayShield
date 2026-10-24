@@ -276,3 +276,41 @@ Embeddings, cosine similarity, vector search (pgvector), chunking, RAG vs fine-t
 - The 10 RAG questions are few and were written by the same author as the guide, so 100% is an easy bar. A real evaluation would use questions from real support tickets.
 - Fixed in this phase: the impossible_travel reason said "0 minutes earlier" for gaps under a minute; it now says seconds. Explanations cached before the fix keep the old wording.
 - Demo payments are sent seconds apart for days-apart dataset transactions, so impossible_travel fires more often in the demo than it would on real-time traffic.
+
+## Phase 6 — Tests, CI & Load Test ✅
+
+### What was built
+- `tests/fixtures/sample_transactions.csv` (made in Phase 1): 307 made-up rows with the exact Sparkov columns, 19 fraud. The data tests (seed, features, training, evaluation, demo) run on it, so tests and CI never need Kaggle.
+- **Coverage: 95.5% of `app/`** with `pytest-cov` (target 80%). Tests use separate `payshield_test` databases.
+- **ruff** for linting and formatting (`make lint`).
+- **`.github/workflows/ci.yml`**: on every push and PR, it starts Postgres (pgvector) and MongoDB as service containers, installs dependencies, runs `ruff check`, then `pytest --cov=app --cov-fail-under=80`.
+- **Load test** (`loadtest/locustfile.py`, `loadtest/run.py`, `make loadtest`): 30 users for 60 s, each payment with a unique Idempotency-Key and a real fraudTest.csv transaction for a seeded card. Results go to `docs/load_test_results.md`.
+
+### How it works (plain English)
+`make loadtest` prepares 3,000 realistic payment bodies, starts Locust headless against the running API, reads Locust's CSV summary and appends payments/sec, p50/p95/p99 latency and error rate to the results file, along with the machine specs.
+
+### Key decisions and why
+- **The slowdown found:** about 50 ms of CPU per payment (history 21 ms, pandas features 19 ms, model 9 ms), and one Uvicorn process can only use one core. The index was already there, so this wasn't an index problem.
+- **The fix:** 4 Uvicorn workers **and** one math thread per worker (`OMP_NUM_THREADS=1` etc., set only on the API server command, so `make train` still uses every core). Adding workers alone made it 10× worse, because the default thread pools of 4 processes fought over 12 cores. Measured before and after: **21.5 → 98.6 payments/sec, p95 1,900 → 390 ms, 0% errors**.
+- **The DB pool was cut to 10 + 5 per worker**, so 4 workers stay under Postgres's 100-connection limit.
+- **Coverage needs `concurrency = ["thread", "greenlet"]`.** SQLAlchemy's async layer runs our code in greenlets, and without this setting coverage under-reported `payments.py` as 44% when it's really about 91%.
+- **A new test checks that a MongoDB outage doesn't fail a payment**: the payment commits in Postgres and the logging error is swallowed and logged.
+- **ruff ignores E501 (line length)** because `ruff format` already handles it, as ruff's docs recommend.
+
+### How to run / check it
+```bash
+make test       # 47 tests + coverage
+make lint
+make loadtest   # needs `make up`, `make seed` and the dataset
+```
+
+### Tests (count, what they cover, passing?)
+**47 tests, all passing**, 95.5% coverage of `app/`. 1 new test this phase (Mongo outage).
+**CI:** the workflow file parses and mirrors the local commands, but it has **not run on GitHub yet**: this repo has no remote. It will run on the first push.
+
+### Concepts to learn from this phase
+Test fixtures vs real data, coverage (and its blind spots), CI service containers, load testing, percentiles (p50/p95/p99), the CPU-bound vs I/O-bound split, the event loop, process vs thread parallelism, thread oversubscription, connection-pool sizing.
+
+### Limitations
+- Locust, the API and both databases share one laptop, so the numbers are a lower bound, not a capacity plan.
+- Fetching a card's full history per payment is the main remaining cost. At real scale you'd keep running stats per card (count, mean, variance, last location) and update them on each payment.
