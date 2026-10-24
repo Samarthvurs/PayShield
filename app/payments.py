@@ -5,6 +5,7 @@ Order of checks (each one can stop the flow with a decline code):
   -> balance (51) -> fraud check (59) -> approve (00) and deduct the balance.
 """
 
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -12,6 +13,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import db
+from app.fraud.checker import FraudCheckResult, get_checker
+from app.fraud.features import features_for_payment
 from app.models import Card, Payment
 from app.schemas import PaymentRequest, PaymentResponse
 from app.security import luhn_valid, tokenize_card
@@ -25,6 +29,8 @@ RESPONSE_MESSAGES: dict[str, str] = {
     "59": "Suspected fraud",
 }
 
+logger = logging.getLogger("payshield.payments")
+
 
 def response_from(payment: Payment) -> PaymentResponse:
     """Build the API response from a saved payment row."""
@@ -35,6 +41,69 @@ def response_from(payment: Payment) -> PaymentResponse:
         message=RESPONSE_MESSAGES[payment.response_code],
         risk_score=payment.risk_score,
     )
+
+
+async def card_history(session: AsyncSession, card_id: int) -> list[dict]:
+    """The card's earlier payments, oldest first (uses the (card_id, created_at) index)."""
+    rows = await session.execute(
+        select(
+            Payment.created_at,
+            Payment.amount,
+            Payment.merchant_category,
+            Payment.merchant_lat,
+            Payment.merchant_lon,
+        )
+        .where(Payment.card_id == card_id)
+        .order_by(Payment.created_at)
+    )
+    return [
+        {
+            "time": t,
+            "amount": float(a),
+            "merchant_category": c,
+            "merchant_lat": la,
+            "merchant_lon": lo,
+        }
+        for t, a, c, la, lo in rows
+    ]
+
+
+async def run_fraud_check(
+    session: AsyncSession, card: Card, request: PaymentRequest, now: datetime
+) -> FraudCheckResult:
+    """Build features from the card's history and score the payment."""
+    payment = {
+        "time": now,
+        "amount": float(request.amount),
+        "merchant_category": request.merchant_category,
+        "merchant_lat": request.merchant_lat,
+        "merchant_lon": request.merchant_lon,
+    }
+    features = features_for_payment(payment, await card_history(session, card.id))
+    return get_checker().check(features)
+
+
+async def log_fraud_check(payment: Payment, last4: str, result: FraudCheckResult) -> None:
+    """Append the fraud check to MongoDB. A Mongo outage must not fail the payment, so
+    errors are logged and swallowed (the payment is already committed in Postgres)."""
+    try:
+        await db.get_mongo().fraud_checks.insert_one(
+            {
+                "payment_id": str(payment.id),
+                "card_last4": last4,
+                "rule_score": result.rule_score,
+                "ml_score": result.ml_score,
+                "final_score": result.final_score,
+                "threshold": result.threshold,
+                "rules_triggered": result.rules_triggered,
+                "reasons": result.reasons,
+                "decision": "DECLINE" if result.decline else "APPROVE",
+                "features": result.features,
+                "created_at": payment.created_at,
+            }
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not log fraud check for payment %s", payment.id)
 
 
 def is_expired(month: int, year: int, now: datetime) -> bool:
@@ -61,6 +130,7 @@ async def process_payment(
     now = datetime.now(UTC)
     card: Card | None = None
     risk_score: int | None = None
+    fraud: FraudCheckResult | None = None
 
     if not luhn_valid(request.card_number):
         code = "14"
@@ -79,8 +149,9 @@ async def process_payment(
         elif card.balance < request.amount:
             code = "51"
         else:
-            risk_score = 0  # placeholder until the fraud checker is added
-            code = "00"
+            fraud = await run_fraud_check(session, card, request, now)
+            risk_score = round(fraud.final_score)
+            code = "59" if fraud.decline else "00"
 
     if code == "00" and card is not None:
         card.balance = card.balance - Decimal(request.amount)
@@ -111,4 +182,6 @@ async def process_payment(
         if winner is None:
             raise
         return response_from(winner)
+    if fraud is not None and card is not None:
+        await log_fraud_check(payment, card.last4, fraud)
     return response_from(payment)

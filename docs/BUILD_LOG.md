@@ -133,3 +133,57 @@ Idempotency keys, ACID transactions, pessimistic row locking (`FOR UPDATE`), rac
 ### Limitations
 - Balances are a simple prepaid-style number. Real card networks separate authorization from settlement (clearing).
 - There's no rate limiting.
+
+## Phase 3 — Fraud Checker (ML + 3 Rules) ✅
+
+### What was built
+- `app/fraud/features.py`: **one** feature function (`compute_features`) used by training, evaluation and live payments.
+- `app/fraud/rules.py`: `too_fast` (35), `unusual_amount` (30), `impossible_travel` (35), each returning a human-readable reason.
+- `app/fraud/checker.py`: `final = 0.5 × rule_score + 0.5 × ml_score`, decline if `final ≥ threshold`. It's loaded once at app startup.
+- `scripts/train_model.py` (`make train`) and `scripts/evaluate.py` (`make evaluate`) → `docs/evaluation.md` + `docs/confusion_matrix.png`.
+- Every live check is logged to MongoDB `fraud_checks` (scores, rules, reasons, features, last 4 digits).
+
+### How it works (plain English)
+For a live payment, the API loads the card's earlier payments (using the `(card_id, created_at)` index), adds the new payment as the last row of a small table, and runs the same `compute_features` used in training. Features use only the past: amount, z-score against earlier amounts, number of payments in the last 60 s / 1 h / 24 h, seconds since the previous payment, distance and speed from the previous payment, hour, category. The rules turn these into points, the model turns them into a fraud probability, and the checker combines the two.
+
+### Key decisions and why
+- **Same code for training and live** (`features_for_payment` wraps `compute_features`). A test checks that live features equal training features row by row.
+- **Vectorized features.** Running per-row Python over 1.85M rows would be far too slow, so time windows use one binary search (`np.searchsorted`) over a sorted `card × time` key. Feature building plus training on 1.3M rows took **35 s**.
+- **Time-based split**: the last 10% of training dates (from 2020-05-02) is the validation set. Training: 1,167,007 rows; validation: 129,668 rows.
+- **`class_weight="balanced"`**, because fraud is only 0.57% of training rows.
+- **Thresholds chosen on validation by best F1**: combined **48.5**, ML-only **98.0** (balanced weighting pushes probabilities up, hence the high ML threshold). No refit on the full training set after choosing them, kept simple.
+- **Without a model** the rules decide alone with threshold 60, so a single rule (max 35) can't decline but two together (70) can.
+- **Evaluation history:** test-set features are computed with each card's earlier history, including the training months, as a live system would have.
+- **Mongo logging happens after the Postgres commit and never fails the payment.** If Mongo is down, the payment still goes through and the error is logged.
+- Label safety: `is_fraud` isn't in `MODEL_FEATURES`, and a test flips every label and checks the features don't change.
+
+### How to run / check it
+```bash
+make train      # ~40 s
+make evaluate   # ~40 s
+```
+
+### Results (real output of `make evaluate` on fraudTest.csv: 555,719 rows, 2,145 fraud, base rate 0.386%)
+| Approach | Precision | Recall | F1 | PR-AUC | FPR |
+|---|---|---|---|---|---|
+| Rules only | 0.047 | 0.467 | 0.085 | 0.038 | 3.68% |
+| ML only (≥ 98) | 0.781 | 0.765 | **0.772** | **0.848** | 0.083% |
+| Combined (≥ 48.5) | 0.538 | **0.839** | 0.656 | 0.611 | 0.279% |
+
+**What this means, honestly:**
+- The ML model does most of the work. The plan's fixed 50/50 combination **catches more fraud** (1,799 vs 1,640, recall 0.84 vs 0.77) but **wrongly declines about 3× more good payments** (1,542 vs 461), so its F1 is lower than ML alone.
+- `too_fast` **never fires** on Sparkov: the simulator has no bursts of 6 payments in a minute. It's still useful for live card-testing attacks, which a test demonstrates.
+- `impossible_travel` fires 14,176 times but only 190 are fraud. Sparkov places each merchant randomly around the cardholder's home, so two quick payments can look "far apart". On simulated data this rule mostly adds noise.
+- `unusual_amount` is the most useful rule (precision 0.12, about 30× the base rate).
+- Live check: a $1,450 payment on a card that usually spends small amounts fired `unusual_amount` (z = 9.3), got ML score 37 and final 33.65, below 48.5, so it was approved and logged to Mongo.
+
+### Tests (count, what they cover, passing?)
+14 new tests (`tests/test_fraud.py`), 33 total, **all passing**: each rule fires and doesn't fire (including the exact boundaries 5 vs 6 payments, z = 3.0, 900 km/h); the score caps at 100; the **threshold boundary** (exactly 50.0 declines, 49.5 doesn't); rules-only mode; live features = training features; features use only earlier rows; the **label never affects features**; time split; training and evaluation on the fixture; and a live card-testing burst from far away → `59` with risk 70, logged to Mongo without the card number.
+
+### Concepts to learn from this phase
+Training/serving skew, time-based validation (no peeking at the future), class imbalance, gradient boosting, precision vs recall vs F1, PR-AUC (better than ROC-AUC for rare classes), false positive rate, why accuracy is useless here (approve everything = 99.6% "accurate").
+
+### Limitations
+- The 50/50 weights are fixed by design. Learning the weights, or using the ML score alone with rules as explanations, would score better on this data.
+- Live payments use the current UTC time for "hour of day", while the dataset uses simulated local time.
+- Fetching a card's whole history on each payment is fine for about 1,300 rows per card, but would need a cap or pre-aggregated stats at real scale.

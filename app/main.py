@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import db
+from app.fraud.checker import get_checker
 from app.models import Card, Payment
 from app.payments import RESPONSE_MESSAGES, process_payment
 from app.schemas import (
@@ -32,8 +33,9 @@ logger = logging.getLogger("payshield")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    """Open database connections on startup and close them on shutdown."""
+    """Open database connections and load the fraud model on startup; close on shutdown."""
     await db.connect()
+    get_checker()  # load the model once now, not on the first payment
     yield
     await db.disconnect()
 
