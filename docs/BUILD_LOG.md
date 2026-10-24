@@ -314,3 +314,29 @@ Test fixtures vs real data, coverage (and its blind spots), CI service container
 ### Limitations
 - Locust, the API and both databases share one laptop, so the numbers are a lower bound, not a capacity plan.
 - Fetching a card's full history per payment is the main remaining cost. At real scale you'd keep running stats per card (count, mean, variance, last location) and update them on each payment.
+
+## Phase 7 — README & Final Explanation ✅
+
+### What was built
+- **`README.md`**: one-line description, the 4-part diagram, a results table with real numbers only, how to run, API endpoints with `curl` examples, why each tech choice (especially Postgres vs MongoDB), dataset credit, a "Built with Claude Code" section, limitations and future ideas.
+- **`docs/PROJECT_EXPLAINED.md`**: one payment from start to finish, the 4 parts, every table and collection, the fraud checker and what each metric means, RAG step by step, a glossary, the Visa JD mapping, 10 interview questions with answers, 3 resume bullets and a 2-minute demo script.
+
+### How it works (plain English)
+Every number in both documents was copied from a script's output: `make evaluate` (`docs/evaluation.md`), `make loadtest` (`docs/load_test_results.md`), `make test`, `make seed` and `make demo`.
+
+### Key decisions and why
+- **The weaker-than-ML combined score is shown openly** in the README results, with the reason. Measuring and explaining a surprising result is worth more in an interview than hiding it.
+- The demo script was checked against the live API: the blocked card → `05`, the low-balance card with $50 → `51`, and the expired card → `54`.
+
+### How to run / check it
+Read `README.md` → "How to run".
+
+### Tests (count, what they cover, passing?)
+No code changes in this phase. 47 tests, all passing.
+
+### Concepts to learn from this phase
+Writing for your audience, reproducible results, honest reporting of limitations.
+
+### Limitations
+- The GitHub Actions workflow hasn't run yet because the repository has no remote. It runs on the first push.
+- Explanations in this run came from the fallback template (no `ANTHROPIC_API_KEY` was set).
