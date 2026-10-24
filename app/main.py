@@ -1,19 +1,26 @@
 """FastAPI app: API routes and the dashboard."""
 
+import json
 import logging
+import uuid
+from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import db
+from app.config import get_settings
+from app.demo import demo_requests
 from app.fraud.checker import get_checker
 from app.models import Card, Payment
 from app.payments import RESPONSE_MESSAGES, process_payment
@@ -29,6 +36,7 @@ from app.schemas import (
 from app.security import require_api_key
 
 logger = logging.getLogger("payshield")
+FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 
 
 @asynccontextmanager
@@ -42,6 +50,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="PayShield", version="1.0.0", lifespan=lifespan)
 Session = Annotated[AsyncSession, Depends(db.get_session)]
+app.mount("/static", StaticFiles(directory=FRONTEND), name="static")
 
 
 # ---------- Clean JSON errors (no stack traces, never echo the card number) ----------
@@ -213,3 +222,50 @@ async def stats(session: Session) -> Stats:
         bucket_size=bucket_size,
         over_time=[TimeBucket(bucket=b, approved=a, declined=d) for b, a, d in rows],
     )
+
+
+# ---------- Dashboard ----------
+
+
+@app.get("/", include_in_schema=False)
+async def dashboard() -> FileResponse:
+    """The dashboard page."""
+    return FileResponse(FRONTEND / "index.html")
+
+
+def _require_dev() -> None:
+    """Dev-only endpoints return 404 when APP_ENV isn't "dev"."""
+    if not get_settings().is_dev:
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+@app.get("/api/dev/test-cards", dependencies=[Depends(_require_dev)])
+async def test_cards() -> list[dict]:
+    """Test card numbers written by `make seed`, for the dashboard's test form (dev only).
+
+    These are synthetic test numbers that only work inside PayShield.
+    """
+    path = Path(get_settings().test_cards_path)
+    return json.loads(path.read_text()) if path.exists() else []
+
+
+@app.post("/api/demo", dependencies=[Depends(_require_dev), Depends(require_api_key)])
+async def send_demo(session: Session, count: Annotated[int, Query(ge=1, le=500)] = 200) -> dict:
+    """Run ~200 fraudTest.csv transactions through the payment flow (dev only).
+
+    Each one goes through `process_payment`, exactly like POST /api/payments.
+    """
+    tokens = set((await session.scalars(select(Card.card_token))).all())
+    try:
+        bodies = demo_requests(tokens, count)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not bodies:
+        raise HTTPException(status_code=400, detail="No seeded cards found: run `make seed`")
+    codes: Counter[str] = Counter()
+    fraud = 0
+    for body in bodies:
+        fraud += int(body.pop("is_fraud", 0))
+        result = await process_payment(session, PaymentRequest(**body), f"demo-{uuid.uuid4()}")
+        codes[result.response_code] += 1
+    return {"sent": len(bodies), "by_code": dict(sorted(codes.items())), "dataset_fraud": fraud}

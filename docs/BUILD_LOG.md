@@ -187,3 +187,46 @@ Training/serving skew, time-based validation (no peeking at the future), class i
 - The 50/50 weights are fixed by design. Learning the weights, or using the ML score alone with rules as explanations, would score better on this data.
 - Live payments use the current UTC time for "hour of day", while the dataset uses simulated local time.
 - Fetching a card's whole history on each payment is fine for about 1,300 rows per card, but would need a cap or pre-aggregated stats at real scale.
+
+## Phase 4 — Dashboard ✅
+
+### What was built
+A single-page dashboard served by FastAPI at `/` (`frontend/index.html`, `app.js`, `styles.css`; plain HTML, JavaScript and CSS with Chart.js from a CDN):
+1. **Stat cards**: total payments, approval rate, fraud-decline rate, average risk score.
+2. **Stacked bar chart**: approved vs declined over time (bucket size adapts: minute, hour or day).
+3. **Payments table**: last 50, auto-refresh every 5 s, green/red status pills, card last 4, merchant, amount, risk score, triggered rules, and an All / Declined filter.
+4. **Test payment form**: pick a seeded test card, amount, merchant, category and location; the result shows inline.
+5. **"Send 200 demo payments" button** → `POST /api/demo` (dev only, needs the API key). It replays fraudTest.csv transactions for seeded cards through the same `process_payment` function.
+6. A **"Why?" button** on declined rows opens a side panel (wired up in Phase 5).
+
+New endpoints: `GET /`, `/static/*`, `GET /api/dev/test-cards` (dev only), `POST /api/demo` (dev only + API key). `app/demo.py` holds the demo logic shared with `scripts/demo_traffic.py` (`make demo`).
+
+### How it works (plain English)
+The page calls the JSON API with `fetch`. It refreshes stats, the chart and the table every 5 seconds. Everything is built with `textContent` (never `innerHTML` with data), so a merchant name can't inject HTML or JavaScript.
+
+### Key decisions and why
+- **No API key in the JavaScript.** The user pastes it into a field; it's kept in that browser's `localStorage`. A test scans the frontend files for a hard-coded key.
+- **Test cards come from `GET /api/dev/test-cards`**, which reads the git-ignored `scripts/test_cards.json`. It only exists when `APP_ENV=dev`. With any other value both dev endpoints return 404 (tested).
+- **The demo uses only seeded cardholders.** Their test card numbers are re-derived from the dataset id, and about 15% of the sample is dataset fraud so the dashboard shows declines. The fraud label is used only for the summary ("N were fraud in the dataset") and is removed before the request is processed.
+- **Mobile**: the grid collapses to one column under 860 px, stat cards go 2 per row, and the table scrolls sideways.
+- **States**: "Loading…", empty-table and empty-chart messages, readable red error boxes, disabled buttons while sending. If the Chart.js CDN is blocked, the stats and table still work.
+
+### How to run / check it
+```bash
+make up && make seed && make train
+make demo          # or press the button on the dashboard
+# open http://localhost:8000
+```
+Real run of `make demo` against the live API: **200 payments in about 21 s, 186 approved (`00`) and 14 declined as suspected fraud (`59`)**. The dashboard then showed 203 payments (3 from earlier manual tests), an approval rate of 93.1%, a fraud-decline rate of 6.9% and an average risk of 11.4.
+
+Checked in a browser: stats, chart, table, the Declined filter, and the narrow (phone-width) layout. One bug was found and fixed: the chart's "no payments" message stayed visible because a CSS `display` rule overrode the `hidden` attribute. A global `[hidden] { display: none !important; }` fixed it.
+
+### Tests (count, what they cover, passing?)
+5 new tests (`tests/test_dashboard.py`), 38 total, **all passing**: the page and static files load; no API key in the frontend; test cards are listed; the demo needs the key and sends 50 fixture payments; a missing dataset gives a readable 400; dev endpoints return 404 outside dev.
+
+### Concepts to learn from this phase
+Single-page apps without a framework, polling vs push, XSS and why `textContent` is safe, keeping secrets out of client code, responsive CSS grid.
+
+### Limitations
+- Polling every 5 s is simple but wasteful at scale; server-sent events or WebSockets would push updates instead.
+- Only the latest 50 payments are shown (the API itself is paginated).

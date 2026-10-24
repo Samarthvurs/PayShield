@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PayShield Dashboard</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">🛡️</span>
+      <div>
+        <h1>PayShield</h1>
+        <p class="subtitle">Real-time fraud checks for every payment</p>
+      </div>
+    </div>
+    <div class="health" id="health" aria-live="polite">
+      <span class="dot" id="dot-postgres"></span>Postgres
+      <span class="dot" id="dot-mongo"></span>MongoDB
+    </div>
+  </header>
+
+  <main>
+    <section class="key-bar">
+      <label for="api-key">API key</label>
+      <input id="api-key" type="password" autocomplete="off" placeholder="Paste API_KEY from your .env">
+      <span class="hint">Kept only in this browser. Needed to send payments.</span>
+    </section>
+
+    <section class="stats" aria-label="Summary">
+      <div class="stat"><span class="label">Total payments</span><span class="value" id="stat-total">–</span></div>
+      <div class="stat"><span class="label">Approval rate</span><span class="value" id="stat-approval">–</span></div>
+      <div class="stat"><span class="label">Fraud-decline rate</span><span class="value" id="stat-fraud">–</span></div>
+      <div class="stat"><span class="label">Avg risk score</span><span class="value" id="stat-risk">–</span></div>
+    </section>
+
+    <div class="grid">
+      <section class="card chart-card">
+        <div class="card-head">
+          <h2>Approved vs declined over time</h2>
+          <span class="muted" id="bucket-label"></span>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="chart" aria-label="Approved and declined payments over time"></canvas>
+          <p class="empty" id="chart-empty" hidden>No payments yet. Send a test or demo payment.</p>
+        </div>
+      </section>
+
+      <section class="card form-card">
+        <h2>Send a test payment</h2>
+        <form id="pay-form">
+          <label>Test card
+            <select id="card-select" required><option value="">Loading test cards…</option></select>
+          </label>
+          <div class="row">
+            <label>Amount ($)<input id="amount" type="number" min="0.01" step="0.01" value="25.00" required></label>
+            <label>Category<select id="category"></select></label>
+          </div>
+          <label>Merchant name<input id="merchant" type="text" value="Corner Store" maxlength="200" required></label>
+          <div class="row">
+            <label>Latitude<input id="lat" type="number" step="any" min="-90" max="90" value="40.71" required></label>
+            <label>Longitude<input id="lon" type="number" step="any" min="-180" max="180" value="-74.00" required></label>
+          </div>
+          <button type="submit" id="pay-btn">Send payment</button>
+        </form>
+        <div class="result" id="pay-result" hidden></div>
+        <hr>
+        <button type="button" class="secondary" id="demo-btn">Send 200 demo payments</button>
+        <p class="hint">Replays real transactions from the fraudTest.csv dataset (dev only).</p>
+        <div class="result" id="demo-result" hidden></div>
+      </section>
+    </div>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Latest payments</h2>
+        <div class="filters" role="group" aria-label="Filter payments">
+          <button type="button" class="chip active" data-filter="">All</button>
+          <button type="button" class="chip" data-filter="DECLINED">Declined</button>
+        </div>
+      </div>
+      <div class="error" id="table-error" hidden></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Time</th><th>Status</th><th>Card</th><th>Merchant</th><th class="num">Amount</th><th class="num">Risk</th><th>Rules triggered</th><th></th></tr>
+          </thead>
+          <tbody id="payments"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+      <p class="hint">Refreshes every 5 seconds.</p>
+    </section>
+  </main>
+
+  <div class="overlay" id="explain-overlay" hidden>
+    <aside class="panel" role="dialog" aria-modal="true" aria-labelledby="explain-title">
+      <button type="button" class="close" id="explain-close" aria-label="Close">×</button>
+      <h2 id="explain-title">Why was this declined?</h2>
+      <div id="explain-body"></div>
+    </aside>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
