@@ -1,0 +1,21 @@
+# Secrets
+.env
+kaggle.json
+
+# Dataset and trained model (large, downloaded/generated locally)
+data/
+models/
+scripts/test_cards.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Load test raw output
+loadtest/results/

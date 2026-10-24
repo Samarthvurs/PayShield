@@ -1,0 +1,38 @@
+# CPU-only PyTorch wheels (sentence-transformers needs torch; the CUDA build is ~2 GB larger)
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# --- Web API ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# --- Databases ---
+sqlalchemy[asyncio]==2.0.36
+psycopg[binary]==3.2.3
+pgvector==0.3.6
+motor==3.6.0
+
+# --- ML / data ---
+numpy==2.2.1
+pandas==2.2.3
+scikit-learn==1.6.0
+joblib==1.4.2
+matplotlib==3.10.0
+faker==33.1.0
+kaggle==1.6.17
+
+# --- RAG / LLM ---
+torch==2.5.1+cpu
+transformers==4.47.1
+huggingface-hub==0.27.0
+sentence-transformers==3.3.1
+anthropic==0.42.0
+
+# --- Dev: tests, lint, load test ---
+httpx==0.28.1
+pytest==8.3.4
+pytest-asyncio==0.25.0
+pytest-cov==6.0.0
+ruff==0.8.4
+locust==2.32.5
