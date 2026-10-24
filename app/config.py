@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     mongo_db: str = "payshield"
     card_token_secret: str = "change-me-to-a-long-random-string"
     api_key: str = "change-me-api-key"
-    anthropic_api_key: str | None = None
-    llm_model: str = "claude-opus-5-5"
+    gemini_api_key: str | None = None
+    llm_model: str = "gemini-3.5-flash"
 
     model_path: str = "models/fraud_model.joblib"
     data_dir: str = "data/raw"

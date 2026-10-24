@@ -340,3 +340,32 @@ Writing for your audience, reproducible results, honest reporting of limitations
 ### Limitations
 - The GitHub Actions workflow hasn't run yet because the repository has no remote. It runs on the first push.
 - Explanations in this run came from the fallback template (no `ANTHROPIC_API_KEY` was set).
+
+## Change — AI explainer switched from Claude to Google Gemini ✅
+
+### What changed
+- `app/ai/explainer.py` now calls the **Google Gemini API** through the official `google-genai` SDK (`client.aio.models.generate_content`), replacing the Anthropic SDK.
+- `.env`: `ANTHROPIC_API_KEY` → **`GEMINI_API_KEY`**, and `LLM_MODEL` defaults to **`gemini-3.5-flash`**.
+- `requirements.txt`: `anthropic` → `google-genai==2.28.0`, and `pydantic` 2.10.4 → **2.12.5** (required by that SDK version).
+- Tests, README and `PROJECT_EXPLAINED.md` were updated. Earlier entries in this log are left as they were written.
+
+### How it works (plain English)
+The RAG steps didn't change: safe facts only, the 3 nearest guide chunks, validation, one retry, the fallback and the Mongo cache. Only the "ask the LLM" step is different:
+- **JSON mode**: `response_mime_type="application/json"` plus `response_schema=Explanation` (the same Pydantic model we validate with), so Gemini replies with JSON directly. We still validate it and drop invented source ids.
+- `temperature=0.2`, so explanations are steady rather than creative.
+- If a **safety filter blocks** the reply, `response.text` is empty, and PayShield uses the template fallback. An **API or network error** (`google.genai.errors.APIError`, `httpx.HTTPError`) also falls back.
+
+### Key decisions and why
+- **`gemini-3.5-flash`**: a fast, cheap model is enough for a short explanation, and it's the current Flash model used in the SDK's own tests. Any model can be set with `LLM_MODEL`.
+- **SDK version 2.28.0**, a few releases behind the newest (2.33.0), because a release that has been out a while is safer to pin.
+
+### How to run / check it
+Put `GEMINI_API_KEY=...` in `.env` (free key from Google AI Studio), run `docker compose up -d --build`, then click **Why?** on a declined payment.
+
+**Real live result** (payment `bdf47ef7…`, $760.29, risk 51.05 ≥ 48.5): `model: "gemini-3.5-flash"`, with three reasons (13 payments in 60 s → `too_fast`; 106 km in 11 s → `impossible_travel`; 6.0 standard deviations above usual spending), each grounded in the cited chunks `decline_codes.md#6`, `fraud_rules_guide.md#2` and `fraud_rules_guide.md#4`.
+
+### Tests (count, what they cover, passing?)
+**49 tests, all passing; coverage 96.1%.** The Gemini path is tested with a fake client: it retries once after invalid JSON, uses JSON mode, and **never sends the full card number** (only the last 4 digits). New: a blocked reply and an API error (503) both fall back to the template.
+
+### Limitations
+- Only one live Gemini call was made during the build. Explanation quality hasn't been measured beyond the retrieval hit rate.

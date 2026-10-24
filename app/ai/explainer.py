@@ -3,9 +3,9 @@
 1. Collect SAFE facts about the payment: last 4 digits, amount, category, scores, rules.
    The full card number is never available here (it's never stored) and never sent.
 2. Retrieve the 3 most relevant chunks of the fraud-rules guide (pgvector search).
-3. Ask Claude to explain the decline using ONLY those chunks, as JSON.
+3. Ask Gemini to explain the decline using ONLY those chunks, as JSON.
 4. Validate the JSON with Pydantic; retry once if it's invalid.
-5. No API key, an API error, or a refusal -> a deterministic fallback built from the
+5. No API key, an API error, or a blocked reply -> a deterministic fallback built from the
    triggered rules and the same chunks.
 6. Cache the result in MongoDB so each payment is explained once.
 """
@@ -15,7 +15,9 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-import anthropic
+import httpx
+from google import genai
+from google.genai import errors, types
 from pydantic import ValidationError
 
 from app import db
@@ -60,7 +62,7 @@ def build_prompt(facts: dict[str, Any], chunks: list[RetrievedChunk]) -> str:
 
 
 def parse_explanation(text: str, allowed_sources: set[str]) -> Explanation:
-    """Parse and validate Claude's JSON. Unknown source ids are dropped (no made-up citations)."""
+    """Parse and validate Gemini's JSON. Unknown source ids are dropped (no made-up citations)."""
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1:
         raise ValueError("no JSON object in the reply")
@@ -70,7 +72,7 @@ def parse_explanation(text: str, allowed_sources: set[str]) -> Explanation:
 
 
 def fallback_explanation(facts: dict[str, Any], chunks: list[RetrievedChunk]) -> Explanation:
-    """A template explanation used when Claude isn't available."""
+    """A template explanation used when Gemini isn't available."""
     code, message = facts.get("response_code", ""), facts.get("message", "Declined")
     summary = f"This payment of ${float(facts.get('amount', 0)):,.2f} was declined: {message} (code {code})."
     reasons = list(facts.get("reasons") or [])
@@ -91,36 +93,41 @@ def fallback_explanation(facts: dict[str, Any], chunks: list[RetrievedChunk]) ->
     return Explanation(summary=summary, reasons=reasons, sources=[c.ref for c in chunks])
 
 
-async def ask_claude(prompt: str, allowed_sources: set[str]) -> Explanation | None:
-    """Call Claude; retry once on invalid JSON. Returns None if it fails or refuses."""
+async def ask_gemini(prompt: str, allowed_sources: set[str]) -> Explanation | None:
+    """Call Gemini; retry once on invalid JSON. Returns None if it fails or is blocked."""
     settings = get_settings()
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=30.0)
-    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    client = genai.Client(api_key=settings.gemini_api_key)
+    config = types.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT,
+        response_mime_type="application/json",  # JSON mode
+        response_schema=Explanation,  # Gemini follows this shape; we still validate it
+        temperature=0.2,  # explanations should be steady, not creative
+        max_output_tokens=4000,
+    )
+    contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
     for attempt in range(2):
-        response = await client.messages.create(
-            model=settings.llm_model,
-            max_tokens=4000,
-            system=SYSTEM_PROMPT,
-            messages=messages,
-            extra_body={"output_config": {"effort": "low"}},  # short, simple task
+        response = await client.aio.models.generate_content(
+            model=settings.llm_model, contents=contents, config=config
         )
-        if response.stop_reason == "refusal":
-            logger.warning("Claude declined to explain; using the fallback.")
+        text = response.text or ""  # empty when a safety filter blocks the reply
+        if not text:
+            logger.warning("Gemini returned no text (blocked?); using the fallback.")
             return None
-        text = "".join(
-            getattr(b, "text", "") for b in response.content if getattr(b, "type", "") == "text"
-        )
         try:
             return parse_explanation(text, allowed_sources)
         except (ValueError, ValidationError) as exc:
-            logger.warning("Invalid JSON from Claude (attempt %d): %s", attempt + 1, exc)
-            messages += [
-                {"role": "assistant", "content": text or "(empty)"},
-                {
-                    "role": "user",
-                    "content": "That was not valid JSON in the required shape. "
-                    "Reply with ONLY the JSON object.",
-                },  # fmt: skip
+            logger.warning("Invalid JSON from Gemini (attempt %d): %s", attempt + 1, exc)
+            contents += [
+                types.Content(role="model", parts=[types.Part(text=text)]),
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(
+                            text="That was not valid JSON in the required shape. "
+                            "Reply with ONLY the JSON object."
+                        )
+                    ],  # fmt: skip
+                ),
             ]
     return None
 
@@ -144,12 +151,12 @@ async def explain(payment: dict[str, Any]) -> ExplanationOut:
 
     result: Explanation | None = None
     model = FALLBACK_MODEL
-    if get_settings().anthropic_api_key:
+    if get_settings().gemini_api_key:
         try:
-            result = await ask_claude(build_prompt(facts, chunks), {c.ref for c in chunks})
+            result = await ask_gemini(build_prompt(facts, chunks), {c.ref for c in chunks})
             model = get_settings().llm_model
-        except anthropic.APIError as exc:
-            logger.warning("Claude API error, using the fallback: %s", exc)
+        except (errors.APIError, httpx.HTTPError) as exc:
+            logger.warning("Gemini API error, using the fallback: %s", exc)
     if result is None:
         result, model = fallback_explanation(facts, chunks), FALLBACK_MODEL
 

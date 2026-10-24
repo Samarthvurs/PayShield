@@ -19,7 +19,7 @@ Imagine a shop sends this to PayShield: *"Charge $392 to card 4…1234, online s
 9. **Approve.** Deduct the balance, save the payment and **commit**: the payment row and the balance change happen together or not at all.
 10. **Log the fraud check to MongoDB** (scores, rules, reasons, features, last 4 digits only).
 11. **Respond:** `{"status": "DECLINED", "response_code": "59", "risk_score": 67, ...}`.
-12. Later, someone on the dashboard clicks **"Why?"**. PayShield finds the 3 most relevant passages of the fraud-rules guide and asks Claude to explain the decline using only those passages. The answer is cached in MongoDB.
+12. Later, someone on the dashboard clicks **"Why?"**. PayShield finds the 3 most relevant passages of the fraud-rules guide and asks Google Gemini to explain the decline using only those passages. The answer is cached in MongoDB.
 
 ---
 
@@ -128,9 +128,9 @@ Test set: `fraudTest.csv`, **555,719 payments from later months, 2,145 fraud (0.
 3. **Embed** each chunk with `all-MiniLM-L6-v2`. That turns text into 384 numbers, so texts with similar meaning get similar vectors. It runs locally and costs nothing.
 4. **Store** chunks and vectors in Postgres (`guide_chunks`, pgvector).
 5. **When "Why?" is clicked:** build a query from the decline ("code 59, too_fast, 6 payments in 60 seconds…"), embed it, and ask Postgres for the 3 nearest chunks by cosine distance (`ORDER BY embedding <=> query LIMIT 3`).
-6. **Prompt Claude** with only *safe facts* (last 4 digits, amount, category, scores, rules, reasons; never the card number, which a test checks) and the 3 excerpts. The instruction: answer only from these, reply as JSON `{summary, reasons, sources}`.
+6. **Prompt Gemini** with only *safe facts* (last 4 digits, amount, category, scores, rules, reasons; never the card number, which a test checks) and the 3 excerpts. The instruction: answer only from these, reply as JSON `{summary, reasons, sources}`. Gemini's **JSON mode** (`response_mime_type="application/json"` plus a response schema) makes it return JSON directly.
 7. **Validate** the JSON with Pydantic and drop any source id that wasn't given. If the JSON is invalid, ask once more.
-8. **Fallback:** with no API key, an error or a refusal, a template builds the explanation from the rule reasons and the top chunk.
+8. **Fallback:** with no API key, an API error, or a reply blocked by Gemini's safety filters, a template builds the explanation from the rule reasons and the top chunk.
 9. **Cache** the result in MongoDB.
 
 **Why RAG instead of just asking the LLM?**
@@ -171,7 +171,7 @@ Test set: `fraudTest.csv`, **555,719 payments from later months, 2,145 fraud (0.
 | Python, JavaScript, HTML | FastAPI backend and fraud checker in Python; dashboard in HTML/CSS/JavaScript |
 | OOP, data structures, algorithms | Typed modules and dataclasses; the Luhn algorithm; sliding time windows with binary search (`np.searchsorted`) over 1.85M rows |
 | Software design / SDLC | Phased build: design → code → test → CI → docs, with one commit and one report per phase |
-| CI/CD, automated testing | GitHub Actions with real Postgres and Mongo; 47 pytest tests; 95.5% coverage |
+| CI/CD, automated testing | GitHub Actions with real Postgres and Mongo; 49 pytest tests; 96.1% coverage |
 | Secure development | Card tokenization; no card number stored, logged, echoed in errors or sent to the AI (all tested); constant-time API key check; XSS-safe UI |
 | Reliability & scalability | Idempotency, row locking, a Mongo outage doesn't block payments, load test 98.6 payments/sec at p95 390 ms |
 | Web UI design | Responsive dashboard with loading, empty and error states |
@@ -193,7 +193,7 @@ Test set: `fraudTest.csv`, **555,719 payments from later months, 2,145 fraud (0.
 5. **"How did you evaluate the model?"** Time-based: trained on earlier months, tested on 555k later transactions, with the threshold chosen on a separate validation slice. Reported precision, recall, F1, PR-AUC and FPR. Not accuracy, because fraud is 0.4%.
 6. **"Your combined score is worse than ML alone. Why keep it?"** The F1 is lower but the recall is higher: it catches 159 more frauds at the cost of more false declines. That's a business trade-off. Next step: learn the weights or use ML to decide and rules to explain. I found this by measuring, not assuming.
 7. **"What's training/serving skew and how did you avoid it?"** When the model sees different inputs in production than in training. One feature function serves both, and a test checks they match.
-8. **"Why RAG and not just ChatGPT/Claude?"** The model doesn't know our rules. RAG gives it our guide, it must answer from it, cite it, and invalid citations are dropped. Rules change by editing a document.
+8. **"Why RAG and not just ask Gemini or ChatGPT directly?"** The model doesn't know our rules. RAG gives it our guide, it must answer from it, cite it, and invalid citations are dropped. Rules change by editing a document.
 9. **"How did you find and fix a performance problem?"** Load test: 21.5/sec. Profiling showed about 50 ms of CPU per payment (history, pandas, model), and one process uses one core. Adding 4 workers alone made it 10× *worse* because of thread oversubscription. 4 workers with one math thread each gave 98.6/sec and p95 390 ms. Measured before and after.
 10. **"What would you change for production?"** Pre-aggregated per-card stats instead of reading full history; learned weights and a cost-based threshold; auth on reads and rate limiting; migrations; separating authorization from settlement; real traffic monitoring for model drift.
 
@@ -201,9 +201,9 @@ Test set: `fraudTest.csv`, **555,719 payments from later months, 2,145 fraud (0.
 
 ## 9. Resume bullets
 
-- Built **PayShield**, a real-time payment authorization API (Python, FastAPI, PostgreSQL, MongoDB) with idempotency keys and row-level locking that prevent double charges and overspending under concurrent requests; **47 automated tests, 95.5% coverage**, CI on GitHub Actions.
+- Built **PayShield**, a real-time payment authorization API (Python, FastAPI, PostgreSQL, MongoDB) with idempotency keys and row-level locking that prevent double charges and overspending under concurrent requests; **49 automated tests, 96.1% coverage**, CI on GitHub Actions.
 - Trained a gradient boosting fraud model on **1.3M card transactions** and evaluated it on **555K later, unseen transactions**: **precision 0.78, recall 0.77, PR-AUC 0.85** at a **0.08% false positive rate**, and compared it against rule-based and hybrid approaches.
-- Added a **RAG explainer** (pgvector + Claude API) that turns declines into cited, plain-English reasons (**100% retrieval hit rate @3**), and load-tested the API to **98.6 payments/sec at p95 390 ms** after diagnosing a CPU thread-oversubscription bottleneck (**4.6× speedup**).
+- Added a **RAG explainer** (pgvector + Google Gemini API) that turns declines into cited, plain-English reasons (**100% retrieval hit rate @3**), and load-tested the API to **98.6 payments/sec at p95 390 ms** after diagnosing a CPU thread-oversubscription bottleneck (**4.6× speedup**).
 
 ---
 
@@ -215,4 +215,4 @@ Test set: `fraudTest.csv`, **555,719 payments from later months, 2,145 fraud (0.
 4. **(20 s) Edge cases.** Use the test form with the *Blocked card* → `05`, then the *Low balance card* with $50 → `51`. "Every decline has a standard response code."
 5. **(25 s) Explainability.** Filter **Declined** and click **Why?** on a `59`. Read the summary and reasons, and point at the source citations. "The AI can only use our fraud guide, so it can't invent rules."
 6. **(15 s) Results.** "On 555,000 unseen transactions the model has 78% precision and 77% recall at a 0.08% false positive rate, and the API handles about 100 payments a second."
-7. **(10 s) Engineering.** "Idempotency and row locking are tested against concurrent requests, the card number is never stored, 47 tests run in CI, and I built it phase by phase with Claude Code."
+7. **(10 s) Engineering.** "Idempotency and row locking are tested against concurrent requests, the card number is never stored, 49 tests run in CI, and I built it phase by phase with Claude Code."

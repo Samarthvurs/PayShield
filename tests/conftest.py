@@ -13,7 +13,7 @@ os.environ["DATABASE_URL"] = _base.rsplit("/", 1)[0] + "/payshield_test"
 os.environ["MONGO_DB"] = "payshield_test"
 os.environ["API_KEY"] = "test-api-key"
 os.environ["CARD_TOKEN_SECRET"] = "test-secret"
-os.environ["ANTHROPIC_API_KEY"] = ""
+os.environ["GEMINI_API_KEY"] = ""
 os.environ["APP_ENV"] = "dev"
 os.environ["MODEL_PATH"] = "models/__no_model_in_tests__.joblib"
 

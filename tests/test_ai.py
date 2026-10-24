@@ -82,42 +82,63 @@ async def test_explain_approved_payment_is_400(client: httpx.AsyncClient) -> Non
     assert resp.status_code == 400
 
 
-class FakeMessages:
-    """Records prompts and returns canned replies, instead of calling Claude."""
+class FakeModels:
+    """Records requests and returns canned replies, instead of calling Gemini."""
 
-    def __init__(self, replies: list[str]) -> None:
+    def __init__(self, replies: list[str | None | Exception]) -> None:
         self.replies, self.calls = replies, []
 
-    async def create(self, **kwargs: Any) -> SimpleNamespace:
+    async def generate_content(self, **kwargs: Any) -> SimpleNamespace:
         self.calls.append(kwargs)
-        text = self.replies.pop(0)
-        return SimpleNamespace(
-            stop_reason="end_turn", content=[SimpleNamespace(type="text", text=text)]
-        )
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return SimpleNamespace(text=reply)
 
 
-async def test_claude_path_never_sends_card_number_and_retries_bad_json(
+def _use_fake_gemini(monkeypatch: pytest.MonkeyPatch, fake: FakeModels) -> None:
+    client = SimpleNamespace(aio=SimpleNamespace(models=fake))
+    monkeypatch.setattr(explainer.genai, "Client", lambda **_: client)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    get_settings.cache_clear()
+
+
+async def test_gemini_path_never_sends_card_number_and_retries_bad_json(
     client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await ingest()
     number, payment_id = await _declined_fraud_payment(client)
     top = await retrieve("too_fast impossible_travel", k=3)
     good = f'{{"summary": "Declined as likely fraud.", "reasons": ["fast"], "sources": ["{top[0].ref}"]}}'
-    fake = FakeMessages(["not json at all", good])
-    monkeypatch.setattr(
-        explainer.anthropic, "AsyncAnthropic", lambda **_: SimpleNamespace(messages=fake)
-    )
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    get_settings.cache_clear()
+    fake = FakeModels(["not json at all", good])
+    _use_fake_gemini(monkeypatch, fake)
 
     result = (await client.get(f"/api/payments/{payment_id}/explain")).json()
     get_settings.cache_clear()
     assert result["model"] == get_settings().llm_model
     assert result["summary"] == "Declined as likely fraud."
     assert len(fake.calls) == 2  # retried once after invalid JSON
+    assert fake.calls[0]["config"].response_mime_type == "application/json"
     sent = str(fake.calls)
     assert number not in sent  # the full card number never reaches the LLM
     assert number[-4:] in sent
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [None, explainer.errors.ServerError(503, {"error": {"message": "unavailable"}})],
+    ids=["blocked-reply", "api-error"],
+)
+async def test_gemini_problems_fall_back_to_template(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, reply: object
+) -> None:
+    await ingest()
+    _, payment_id = await _declined_fraud_payment(client)
+    _use_fake_gemini(monkeypatch, FakeModels([reply]))
+    result = (await client.get(f"/api/payments/{payment_id}/explain")).json()
+    get_settings.cache_clear()
+    assert result["model"] == explainer.FALLBACK_MODEL
+    assert "Suspected fraud" in result["summary"]
 
 
 def test_prompt_contains_only_safe_facts() -> None:

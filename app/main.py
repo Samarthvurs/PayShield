@@ -182,7 +182,7 @@ async def get_payment(payment_id: UUID, session: Session) -> PaymentOut:
 
 @app.get("/api/payments/{payment_id}/explain", response_model=ExplanationOut)
 async def explain_payment(payment_id: UUID, session: Session) -> ExplanationOut:
-    """Plain-English explanation of why a payment was declined (RAG + Claude, cached)."""
+    """Plain-English explanation of why a payment was declined (RAG + Gemini, cached)."""
     details = await get_payment(payment_id, session)
     if details.status != "DECLINED":
         raise HTTPException(status_code=400, detail="Only declined payments can be explained")

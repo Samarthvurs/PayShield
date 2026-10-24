@@ -16,7 +16,7 @@ Payment request  →  Payment API  →  Fraud check (ML model + 3 rules)  →  A
 | 1 | **Payment API** | Takes a payment, checks the card and balance, returns APPROVED/DECLINED | Python, FastAPI, PostgreSQL |
 | 2 | **Fraud checker** | ML model trained on a public fraud dataset + 3 simple rules → one risk score | scikit-learn, MongoDB for logs |
 | 3 | **Dashboard** | Payments table, approve/decline chart, fraud rate, test-payment form | HTML, JavaScript, CSS, Chart.js |
-| 4 | **AI explainer** | Explains a declined payment in plain English, grounded in a fraud-rules guide | RAG (pgvector) + Claude API |
+| 4 | **AI explainer** | Explains a declined payment in plain English, grounded in a fraud-rules guide | RAG (pgvector) + Google Gemini API |
 
 ## Results
 
@@ -37,14 +37,14 @@ The combined score catches the most fraud (1,799 of 2,145), but declines 3× mor
 | RAG retrieval hit rate @3 | **100%** (10/10 questions) | [`docs/evaluation.md`](docs/evaluation.md) |
 | Load test throughput | **98.6 payments/sec** (30 users, 60 s, 0% errors) | [`docs/load_test_results.md`](docs/load_test_results.md) |
 | Latency | **p50 150 ms, p95 390 ms** | same |
-| Tests | **47 passing, 95.5% coverage** of `app/` | `make test` |
+| Tests | **49 passing, 96.1% coverage** of `app/` | `make test` |
 
 ## How to run
 
 You need **Docker Desktop** and a free **Kaggle** account. `make` is optional: on Windows use `.\make.ps1 <target>` with the same target names.
 
 1. **Kaggle token:** go to kaggle.com → *Settings* → *Create New API Token*, then save `kaggle.json` to `~/.kaggle/kaggle.json` (Windows: `C:\Users\<you>\.kaggle\kaggle.json`).
-2. **Configure:** `cp .env.example .env`, then change `CARD_TOKEN_SECRET` and `API_KEY`. Optionally set `ANTHROPIC_API_KEY` for real AI explanations; without it a built-in fallback is used.
+2. **Configure:** `cp .env.example .env`, then change `CARD_TOKEN_SECRET` and `API_KEY`. Optionally set `GEMINI_API_KEY` (free key from [Google AI Studio](https://aistudio.google.com/apikey)) for real AI explanations; without it a built-in fallback is used. The model is set by `LLM_MODEL` (default `gemini-3.5-flash`).
 3. **Start and load everything:**
    ```bash
    make up        # Postgres, MongoDB, API (first build downloads ~2 GB of Python packages)
@@ -105,7 +105,7 @@ curl http://localhost:8000/api/stats
 | **SQLAlchemy 2.0 async + Motor** | One request waiting on a database doesn't block the others. |
 | **HistGradientBoostingClassifier** | Fast on 1.3M rows (training takes 35 s), handles missing values natively, and has class weighting for rare fraud. |
 | **sentence-transformers (local)** | Free, private, offline embeddings. |
-| **Claude API with a fallback** | Plain-English answers that cite their sources. The template fallback means the feature still works without a key or when the API fails. |
+| **Gemini API (JSON mode) with a fallback** | Plain-English answers that cite their sources. JSON mode plus a response schema keeps the output machine-readable, and we still validate it. The template fallback means the feature still works without a key, when the API fails, or when a reply is blocked. |
 | **Vanilla JS + Chart.js** | No build step and nothing to learn beyond the browser. |
 | **Docker Compose** | One command starts the whole system the same way on any machine. |
 
@@ -124,7 +124,7 @@ This project was built with [Claude Code](https://claude.com/claude-code), follo
 - **The fixed 50/50 combination is weaker than ML alone here** (F1 0.656 vs 0.772). `too_fast` never fires on Sparkov, and `impossible_travel` mostly flags good payments, because the simulator scatters merchants around each cardholder's home.
 - **No live traffic.** Demo payments use the current time, so time-based features differ from the dataset's.
 - **The RAG check is small**: 10 questions written alongside the guide.
-- **No `ANTHROPIC_API_KEY` was set during the build**, so the measured explanations came from the fallback template. The Claude path is unit-tested with a fake client.
+- **No `GEMINI_API_KEY` was set during the build**, so the measured explanations came from the fallback template. The Gemini path is unit-tested with a fake client.
 - **Single machine.** The load test numbers are a lower bound.
 - **Prepaid-style balances**: there's no separate authorization and settlement, and no refunds.
 
