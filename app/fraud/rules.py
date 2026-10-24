@@ -85,11 +85,12 @@ def impossible_travel(features: Mapping[str, float | None]) -> RuleHit | None:
     speed = _get(features, "speed_kmh")
     if speed is not None and speed > MAX_TRAVEL_KMH:
         distance = _get(features, "distance_km") or 0
-        minutes = (_get(features, "secs_since_prev") or 0) / 60
+        seconds = _get(features, "secs_since_prev") or 0
+        gap = f"{seconds:,.0f} seconds" if seconds < 120 else f"{seconds / 60:,.0f} minutes"
         return RuleHit(
             "impossible_travel",
             IMPOSSIBLE_TRAVEL_POINTS,
-            f"{distance:,.0f} km from the previous payment only {minutes:,.0f} minutes earlier "
+            f"{distance:,.0f} km from the previous payment only {gap} earlier "
             f"(about {speed:,.0f} km/h)",
         )
     return None

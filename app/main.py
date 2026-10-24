@@ -19,12 +19,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import db
+from app.ai.explainer import explain
 from app.config import get_settings
 from app.demo import demo_requests
 from app.fraud.checker import get_checker
 from app.models import Card, Payment
 from app.payments import RESPONSE_MESSAGES, process_payment
 from app.schemas import (
+    ExplanationOut,
     FraudDetails,
     PaymentList,
     PaymentOut,
@@ -176,6 +178,28 @@ async def get_payment(payment_id: UUID, session: Session) -> PaymentOut:
     payment, last4 = row
     check = (await _fraud_checks([payment.id])).get(str(payment.id))
     return _payment_out(payment, last4, check, detail=True)
+
+
+@app.get("/api/payments/{payment_id}/explain", response_model=ExplanationOut)
+async def explain_payment(payment_id: UUID, session: Session) -> ExplanationOut:
+    """Plain-English explanation of why a payment was declined (RAG + Claude, cached)."""
+    details = await get_payment(payment_id, session)
+    if details.status != "DECLINED":
+        raise HTTPException(status_code=400, detail="Only declined payments can be explained")
+    fraud = details.fraud
+    payment = {
+        "payment_id": details.payment_id,
+        "card_last4": details.card_last4,
+        "amount": details.amount,
+        "merchant_category": details.merchant_category,
+        "response_code": details.response_code,
+        "message": details.message,
+        "rules_triggered": details.rules_triggered,
+        "reasons": fraud.reasons if fraud else [],
+    }
+    if fraud:
+        payment |= fraud.model_dump(include={"rule_score", "ml_score", "final_score", "threshold"})
+    return await explain(payment)
 
 
 @app.get("/api/stats", response_model=Stats)

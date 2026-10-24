@@ -47,6 +47,7 @@ class FraudDetails(BaseModel):
     rule_score: float
     ml_score: float
     final_score: float
+    threshold: float | None = None
     rules_triggered: list[str]
     reasons: list[str]
     features: dict[str, float | None]

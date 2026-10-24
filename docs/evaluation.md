@@ -36,3 +36,23 @@ Thresholds were chosen on the validation set (last 10% of training dates), not o
   the cost of a missed fraud against the cost of annoying a good customer.
 
 <!-- FRAUD_EVAL_END -->
+
+<!-- RAG_EVAL_START -->
+## RAG retrieval check
+
+**Hit rate @3: 100% (10/10 questions)** — the expected guide file was among the top 3 chunks returned by pgvector.
+
+| Question | Expected file | Top-3 files | Hit |
+|---|---|---|---|
+| Six payments on this card within 60 seconds. Why is that suspicious? | `fraud_rules_guide.md` | fraud_rules_guide.md, fraud_patterns.md, decline_codes.md | ✅ |
+| The amount is many standard deviations above the card's usual spending. | `fraud_rules_guide.md` | fraud_rules_guide.md, fraud_patterns.md, decline_codes.md | ✅ |
+| The payment was 2,000 km from the previous one ten minutes earlier. | `fraud_rules_guide.md` | fraud_rules_guide.md, fraud_rules_guide.md, fraud_patterns.md | ✅ |
+| What does the machine learning fraud score mean? | `fraud_rules_guide.md` | fraud_rules_guide.md, fraud_rules_guide.md, decline_codes.md | ✅ |
+| What does response code 51 insufficient funds mean and what should I do? | `decline_codes.md` | decline_codes.md, decline_codes.md, decline_codes.md | ✅ |
+| My card was declined with code 05, card blocked. | `decline_codes.md` | decline_codes.md, decline_codes.md, decline_codes.md | ✅ |
+| Payment declined with code 54 because the card expired. | `decline_codes.md` | decline_codes.md, decline_codes.md, decline_codes.md | ✅ |
+| Criminals check stolen card numbers with many tiny online payments. | `fraud_patterns.md` | fraud_patterns.md, fraud_patterns.md, fraud_patterns.md | ✅ |
+| Why is a lot of fraud committed late at night online? | `fraud_patterns.md` | fraud_patterns.md, fraud_patterns.md, fraud_patterns.md | ✅ |
+| A genuine customer was wrongly declined. What is a false positive? | `fraud_patterns.md` | fraud_patterns.md, decline_codes.md, fraud_rules_guide.md | ✅ |
+
+<!-- RAG_EVAL_END -->

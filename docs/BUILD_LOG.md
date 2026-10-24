@@ -230,3 +230,49 @@ Single-page apps without a framework, polling vs push, XSS and why `textContent`
 ### Limitations
 - Polling every 5 s is simple but wasteful at scale; server-sent events or WebSockets would push updates instead.
 - Only the latest 50 payments are shown (the API itself is paginated).
+
+## Phase 5 — AI Explainer (RAG) ✅
+
+### What was built
+- **Knowledge base** (`knowledge_base/`): `fraud_rules_guide.md`, `decline_codes.md` and `fraud_patterns.md`, each marked *"Fictional guide for the PayShield demo project"*.
+- **Ingest** (`app/ai/ingest.py`, `make ingest`): splits by heading into ≤300-word chunks, embeds them with `all-MiniLM-L6-v2` (384 numbers each, run locally) and stores them in `guide_chunks`. Re-running replaces the old chunks. Real run: **19 chunks**.
+- **Retriever** (`app/ai/retriever.py`): builds a query from the response code, the triggered rules and their reasons, then takes the top 3 chunks by cosine distance with pgvector's `<=>` operator.
+- **Explainer** (`app/ai/explainer.py`) + `GET /api/payments/{id}/explain`: prompt → Claude → JSON validated with Pydantic, one retry on invalid JSON, a deterministic fallback otherwise, cached in MongoDB `ai_explanations`.
+- **Dashboard "Why?" panel** with the summary, reasons and source ids.
+- **RAG check** (`scripts/evaluate_rag.py`, part of `make evaluate`): 10 questions, each with the file it should find.
+
+### How it works (plain English)
+1. Only **safe facts** are collected, from a whitelist: last 4 digits, amount, category, response code, scores, threshold, rules and reasons. The full card number isn't stored anywhere, so it can't be sent.
+2. The query text is turned into a vector, and Postgres finds the 3 guide chunks pointing in the most similar direction.
+3. Claude gets the facts and those 3 excerpts, with the instruction to answer **only** from them and reply as JSON `{summary, reasons, sources}`.
+4. The reply is validated. Any source id that wasn't one of the 3 excerpts is removed, so citations can't be invented. If the JSON is invalid, Claude is asked once more.
+5. With no API key, an API error or a refusal, a template explanation is built from the rule reasons, the scores and the top chunk.
+6. The result is cached in Mongo, so each payment is explained (and paid for) once.
+
+### Key decisions and why
+- **RAG instead of just asking the LLM.** The model can only use our guide, so it can't make up rules or thresholds, and every answer cites its sources. Changing a rule means editing a Markdown file and re-running `make ingest`, not retraining anything.
+- **Local embeddings** (sentence-transformers): free, private, offline, and fast enough for 19 chunks.
+- **Model**: `LLM_MODEL` defaults to `claude-opus-5-5`, the current default Claude model. It runs with `effort: low` because this is a short, simple task. Any model id can be set in `.env`.
+- **No `ANTHROPIC_API_KEY` was available during the build**, so every explanation produced in this run came from the fallback template (`model: "fallback-template"`). The Claude path is covered by a test with a fake client.
+- **A refusal (`stop_reason: "refusal"`) also falls back** to the template instead of showing an error.
+- **Only declined payments can be explained** (400 otherwise).
+- The threshold was added to the fraud details returned by the API, so the explanation can say "risk 67.34, at or above the threshold of 48.5".
+
+### How to run / check it
+```bash
+make ingest
+make evaluate      # also runs the RAG check
+# dashboard: filter Declined -> "Why?"
+```
+Real results: **RAG hit rate @3 = 100% (10/10)**. In the browser, a declined $392 demo payment showed: risk 67.34 ≥ 48.5, impossible_travel (95 km in seconds), ML score 99.69, three cited guide chunks, and "(cached)" when opened a second time.
+
+### Tests (count, what they cover, passing?)
+8 new tests (`tests/test_ai.py`), 46 total, **all passing**: chunking keeps headings and the size limit; re-ingesting replaces chunks; retrieval finds the right file and the hit rate is ≥ 80%; the safe-facts whitelist drops `card_number` and `card_token`; made-up sources are removed; the fallback explanation plus the Mongo cache; approved payments can't be explained; and the **Claude path with a fake client**: one retry after invalid JSON, and **the full card number never appears in what's sent** (only the last 4 digits).
+
+### Concepts to learn from this phase
+Embeddings, cosine similarity, vector search (pgvector), chunking, RAG vs fine-tuning, grounding and citations, prompt design for JSON output, validating LLM output, graceful fallbacks, caching.
+
+### Limitations
+- The 10 RAG questions are few and were written by the same author as the guide, so 100% is an easy bar. A real evaluation would use questions from real support tickets.
+- Fixed in this phase: the impossible_travel reason said "0 minutes earlier" for gaps under a minute; it now says seconds. Explanations cached before the fix keep the old wording.
+- Demo payments are sent seconds apart for days-apart dataset transactions, so impossible_travel fires more often in the demo than it would on real-time traffic.
