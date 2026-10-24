@@ -86,3 +86,50 @@ Tokenization vs encryption (a token can't be reversed without the secret), HMAC,
 ### Limitations
 - Seeded history keeps the dataset's 2019–2020 dates, so a live payment's "time since previous payment" is large for every card.
 - Test card numbers are synthetic and only valid inside PayShield.
+
+## Phase 2 — Payment API ✅
+
+### What was built
+- `POST /api/payments` (headers `X-API-Key` and `Idempotency-Key`), returning `payment_id, status, response_code, message, risk_score`.
+- `GET /api/payments` (newest first, `status` filter, pagination), `GET /api/payments/{id}` and `GET /api/stats` (totals, approval rate, fraud-decline rate, average risk, payments over time).
+- `app/payments.py`: the payment flow. `app/schemas.py`: Pydantic request and response models.
+- Clean JSON errors: `{"error": "..."}` for 401/404, a 422 that lists field names and messages only, and a plain 500 with no stack trace.
+
+### How it works (plain English)
+The flow is one database transaction, with checks in this order:
+1. **Idempotency.** If this `Idempotency-Key` was used before, return the saved answer. A retry never charges twice.
+2. **Luhn check** on the number → `14` if it fails.
+3. **Tokenize and look up** the card → `14` if unknown (or wrong expiry), `05` if blocked, `54` if expired.
+4. **Lock the card row** (`SELECT ... FOR UPDATE`, done in the same query as the lookup). A second payment on the same card waits here until the first commits.
+5. **Balance** → `51` if too low.
+6. **Fraud check** → `59` if the score reaches the threshold. In this phase it's a placeholder that always returns 0.
+7. Approve (`00`), deduct the balance, save the payment and commit, all together.
+
+### Key decisions and why
+- **Declined payments are saved too**, so the dashboard shows them and the idempotent replay works for declines.
+- **Two requests racing with the same Idempotency-Key**: both may pass step 1, but the `UNIQUE` constraint on `idempotency_key` lets only one insert succeed. The loser catches the `IntegrityError` and returns the winner's saved answer.
+- **The request's expiry must match the card's stored expiry**, otherwise `14`. A card is valid until the end of its expiry month.
+- **Custom 422 handler.** FastAPI's default validation error echoes the submitted input, which could include a full card number. Ours only returns field names and messages. `card_number` also has `repr=False`, so it never shows up in logs if the object is printed.
+- **The API key is compared with `hmac.compare_digest`**, so the response time doesn't leak how much of the key was right.
+- **`merchant_category` must be one of the 14 dataset categories**, because the model only knows those.
+- **`GET` endpoints don't need the API key.** The dashboard is read-only and local. Only creating payments (and, later, the demo button) needs the key. A real deployment would put auth on the reads too.
+- **The stats chart's bucket size adapts** to the time span (minute / hour / day).
+- **`Idempotency-Key` is required**; a missing key is a 422. Reusing a key with a different body returns the first saved answer (no body comparison, kept simple).
+
+### How to run / check it
+```bash
+curl -X POST localhost:8000/api/payments -H "X-API-Key: $API_KEY" -H "Idempotency-Key: demo-1" \
+  -H "Content-Type: application/json" \
+  -d '{"card_number":"<from scripts/test_cards.json>","expiry_month":12,"expiry_year":2030,"amount":24.99,"merchant_name":"Store 42","merchant_category":"grocery_pos","merchant_lat":40.7,"merchant_lon":-74.0}'
+```
+Checked live: sending the same request twice returned the same `payment_id` (one charge), and a wrong key returned `{"error":"Invalid API key"}` (401).
+
+### Tests (count, what they cover, passing?)
+15 new tests (`tests/test_payments.py`), 19 total, **all passing**: approval and balance deduction; codes 14 (bad Luhn, unknown card, wrong expiry), 05, 54 and 51; idempotent retry charges once; **5 simultaneous retries with the same key** create one payment; **two simultaneous $60 payments on a $100 card** give exactly one `00` and one `51` (balance ends at $40); wrong API key → 401; missing Idempotency-Key → 422; the validation error never contains the card number; list, filter, get, 404 and stats.
+
+### Concepts to learn from this phase
+Idempotency keys, ACID transactions, pessimistic row locking (`FOR UPDATE`), race conditions, ISO 8583-style response codes, unique constraints as a concurrency guard, never leaking input in errors.
+
+### Limitations
+- Balances are a simple prepaid-style number. Real card networks separate authorization from settlement (clearing).
+- There's no rate limiting.
